@@ -2,11 +2,11 @@
  * Action execution module for DroidClaw.
  * Handles all ADB commands for interacting with Android devices.
  *
- * Supported actions (28):
+ * Supported actions (29):
  *   tap, type, enter, swipe, home, back, wait, done,
  *   longpress, screenshot, launch, clear, clipboard_get, clipboard_set, paste, shell,
  *   submit_message, copy_visible_text, wait_for_content, find_and_tap, compose_email,
- *   open_url, switch_app, notifications, pull_file, push_file, keyevent, open_settings
+ *   open_url, switch_app, notifications, pull_file, push_file, keyevent, open_settings, rotate
  */
 
 import { Config } from "./config.js";
@@ -59,6 +59,8 @@ export interface ActionDecision {
   code?: number;
   // open_settings action
   setting?: string;
+  // rotate action
+  orientation?: "portrait" | "landscape" | "toggle";
 }
 
 export interface ActionResult {
@@ -212,6 +214,8 @@ export function executeAction(action: ActionDecision): ActionResult {
       return executeKeyevent(action);
     case "open_settings":
       return executeOpenSettings(action);
+    case "rotate":
+      return executeRotate(action);
     default:
       console.log(`Warning: Unknown action: ${action.action}`);
       return { success: false, message: `Unknown action: ${action.action}` };
@@ -691,6 +695,36 @@ function executeOpenSettings(action: ActionDecision): ActionResult {
   console.log(`Opening settings: ${setting}`);
   const result = runAdbCommand(["shell", "am", "start", "-a", intentAction]);
   return { success: true, message: `Opened ${setting} settings`, data: result };
+}
+
+
+function executeRotate(action: ActionDecision): ActionResult {
+  const orientation = action.orientation ?? "toggle";
+
+  if (orientation === "toggle") {
+    runAdbCommand(["shell", "settings", "put", "system", "accelerometer_rotation", "0"]);
+    const current = runAdbCommand(["shell", "settings", "get", "system", "user_rotation"]).trim();
+    const next = current === "1" ? "0" : "1";
+    runAdbCommand(["shell", "settings", "put", "system", "user_rotation", next]);
+    const label = next === "1" ? "landscape" : "portrait";
+    return { success: true, message: `Rotated screen to ${label} (toggle)` };
+  }
+
+  if (orientation !== "portrait" && orientation !== "landscape") {
+    return { success: false, message: 'Invalid orientation. Use "portrait", "landscape", or "toggle".' };
+  }
+
+  runAdbCommand(["shell", "settings", "put", "system", "accelerometer_rotation", "0"]);
+  runAdbCommand([
+    "shell",
+    "settings",
+    "put",
+    "system",
+    "user_rotation",
+    orientation === "landscape" ? "1" : "0",
+  ]);
+
+  return { success: true, message: `Rotated screen to ${orientation}` };
 }
 
 /**

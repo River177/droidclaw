@@ -61,7 +61,7 @@ Example:
 {"think": "I see the Settings app is open. I need to scroll down to find Display settings.", "plan": ["Open Settings", "Navigate to Display", "Change theme to dark", "Verify change"], "planProgress": "Step 2: navigating to Display", "action": "swipe", "direction": "up", "reason": "Scroll down to find Display option"}
 
 ═══════════════════════════════════════════
-AVAILABLE ACTIONS (22 total)
+AVAILABLE ACTIONS (23 total)
 ═══════════════════════════════════════════
 
 Navigation (coordinates MUST be a JSON array of TWO separate integers [x, y] — never concatenate them):
@@ -83,6 +83,7 @@ App Control:
   {"action": "open_url", "url": "https://example.com", "reason": "Open URL in browser"}
   {"action": "switch_app", "package": "com.whatsapp", "reason": "Switch to WhatsApp"}
   {"action": "open_settings", "setting": "wifi|bluetooth|display|sound|battery|location|apps|date|accessibility|developer", "reason": "Open settings screen"}
+  {"action": "rotate", "orientation": "portrait|landscape|toggle", "reason": "Rotate device orientation"}
 
 Data:
   {"action": "clipboard_get", "reason": "Read clipboard contents"}
@@ -351,7 +352,7 @@ const actionDecisionSchema = z.object({
   think: z.string().optional().describe("Your reasoning about the current screen state and what to do next"),
   plan: z.array(z.string()).optional().describe("3-5 high-level steps to achieve the goal"),
   planProgress: z.string().optional().describe("Which plan step you are currently on"),
-  action: z.string().describe("The action to take: tap, type, scroll, enter, back, home, wait, done, longpress, launch, clear, clipboard_get, clipboard_set, paste, shell, open_url, switch_app, notifications, pull_file, push_file, keyevent, open_settings, read_screen, submit_message, copy_visible_text, wait_for_content, find_and_tap, compose_email"),
+  action: z.string().describe("The action to take: tap, type, scroll, enter, back, home, wait, done, longpress, launch, clear, clipboard_get, clipboard_set, paste, shell, open_url, switch_app, notifications, pull_file, push_file, keyevent, open_settings, rotate, read_screen, submit_message, copy_visible_text, wait_for_content, find_and_tap, compose_email"),
   coordinates: z.tuple([z.number(), z.number()]).optional().describe("Target field as [x, y] — used by tap, longpress, type, and paste"),
   text: z.string().optional().describe("Text to type, clipboard text, or email body for compose_email"),
   direction: z.string().optional().describe("Scroll direction: up, down, left, right"),
@@ -369,6 +370,7 @@ const actionDecisionSchema = z.object({
   dest: z.string().optional().describe("Device destination path for push_file action"),
   code: z.number().optional().describe("Android keycode number for keyevent action"),
   setting: z.string().optional().describe("Setting name for open_settings: wifi, bluetooth, display, sound, battery, location, apps, date, accessibility, developer"),
+  orientation: z.enum(["portrait", "landscape", "toggle"]).optional().describe("Target screen orientation for rotate action"),
 });
 
 class OpenRouterProvider implements LLMProvider {
@@ -768,9 +770,9 @@ ${signedHeadersString}`;
     });
 
     const text = await response.text();
-    console.log("[VMIC_RAW_RESPONSE_BEGIN]");
-    console.log(text);
-    console.log("[VMIC_RAW_RESPONSE_END]");
+    // console.log("[VMIC_RAW_RESPONSE_BEGIN]");
+    // console.log(text);
+    // console.log("[VMIC_RAW_RESPONSE_END]");
 
     if (!response.ok) {
       throw new Error(`VMIC request failed (${response.status}): ${text}`);
@@ -783,9 +785,9 @@ ${signedHeadersString}`;
     };
 
     const content = this.normalizeVmicContent(data.data?.content ?? "");
-    console.log("[VMIC_NORMALIZED_CONTENT_BEGIN]");
-    console.log(content);
-    console.log("[VMIC_NORMALIZED_CONTENT_END]");
+    // console.log("[VMIC_NORMALIZED_CONTENT_BEGIN]");
+    // console.log(content);
+    // console.log("[VMIC_NORMALIZED_CONTENT_END]");
     return parseJsonResponse(content || "{}");
   }
 }

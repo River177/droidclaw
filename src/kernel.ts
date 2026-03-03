@@ -158,7 +158,7 @@ async function getDecisionStreaming(
 ): Promise<ActionDecision> {
   if (!Config.STREAMING_ENABLED || !llm.capabilities.supportsStreaming || !llm.getDecisionStream) {
     const decision = await llm.getDecision(messages);
-    console.log("[LLM_PARSED_DECISION_NON_STREAM]", JSON.stringify(decision));
+    // console.log("[LLM_PARSED_DECISION_NON_STREAM]", JSON.stringify(decision));
     return decision;
   }
 
@@ -170,12 +170,12 @@ async function getDecisionStreaming(
   }
   process.stdout.write("\n");
 
-  console.log("[LLM_RAW_STREAM_OUTPUT_BEGIN]");
-  console.log(accumulated);
-  console.log("[LLM_RAW_STREAM_OUTPUT_END]");
+  // console.log("[LLM_RAW_STREAM_OUTPUT_BEGIN]");
+  // console.log(accumulated);
+  // console.log("[LLM_RAW_STREAM_OUTPUT_END]");
 
   const decision = parseJsonResponse(accumulated);
-  console.log("[LLM_PARSED_DECISION_STREAM]", JSON.stringify(decision));
+  // console.log("[LLM_PARSED_DECISION_STREAM]", JSON.stringify(decision));
   return decision;
 }
 
