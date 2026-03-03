@@ -9,7 +9,7 @@
  */
 
 import OpenAI from "openai";
-import { createHmac } from "node:crypto";
+import crypto, { createHmac } from "node:crypto";
 import {
   BedrockRuntimeClient,
   InvokeModelCommand,
@@ -612,16 +612,9 @@ class BedrockProvider implements LLMProvider {
 // ===========================================
 
 /**
- * VmicProvider calls a corporate LLM gateway that requires HMAC-SHA256
- * request signing. The gateway accepts an OpenAI-compatible message format
- * with an additional "provider" field to route to the underlying LLM.
- *
- * Authentication: each request carries three headers derived from APP_ID
- * and APP_KEY:
- *   X-App-Id   — the registered application identifier
- *   X-Timestamp — current Unix timestamp in milliseconds
- *   X-Sign      — HMAC-SHA256(key=APP_KEY, message=APP_ID + ":" + timestamp)
- *                  encoded as a lowercase hex string
+ * VmicProvider calls a corporate LLM gateway using gateway-style HMAC
+ * signing headers (X-AI-GATEWAY-*). Request/response payloads are mapped
+ * between DroidClaw's OpenAI-like message format and VMIC's message schema.
  */
 class VmicProvider implements LLMProvider {
   readonly capabilities = { supportsImages: true, supportsStreaming: false };
@@ -630,65 +623,163 @@ class VmicProvider implements LLMProvider {
     return `https://${Config.VMIC_DOMAIN}${Config.VMIC_URI}`;
   }
 
-  private buildAuthHeaders(): Record<string, string> {
-    const timestamp = Date.now().toString();
-    const sign = createHmac("sha256", Config.VMIC_APP_KEY)
-      .update(`${Config.VMIC_APP_ID}:${timestamp}`)
-      .digest("hex");
+  private genNonce(length = 8): string {
+    const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+    let out = "";
+    for (let i = 0; i < length; i++) {
+      out += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return out;
+  }
+
+  private canonicalQuery(params: Record<string, string>): string {
+    const entries = Object.entries(params).sort(([a], [b]) => a.localeCompare(b));
+    return entries
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+      .join("&");
+  }
+
+  private buildGatewayHeaders(
+    method: string,
+    uri: string,
+    query: Record<string, string>
+  ): Record<string, string> {
+    const appId = Config.VMIC_APP_ID;
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const nonce = this.genNonce();
+    const canonicalQueryString = this.canonicalQuery(query);
+
+    const signedHeadersString =
+      `x-ai-gateway-app-id:${appId}
+` +
+      `x-ai-gateway-timestamp:${timestamp}
+` +
+      `x-ai-gateway-nonce:${nonce}`;
+
+    const signingString = `${method.toUpperCase()}
+${uri}
+${canonicalQueryString}
+${appId}
+${timestamp}
+${signedHeadersString}`;
+
+    const signature = createHmac("sha256", Buffer.from(Config.VMIC_APP_KEY, "utf-8"))
+      .update(Buffer.from(signingString, "utf-8"))
+      .digest("base64");
+
     return {
-      "X-App-Id": Config.VMIC_APP_ID,
-      "X-Timestamp": timestamp,
-      "X-Sign": sign,
+      "X-AI-GATEWAY-APP-ID": appId,
+      "X-AI-GATEWAY-TIMESTAMP": timestamp,
+      "X-AI-GATEWAY-NONCE": nonce,
+      "X-AI-GATEWAY-SIGNED-HEADERS":
+        "x-ai-gateway-app-id;x-ai-gateway-timestamp;x-ai-gateway-nonce",
+      "X-AI-GATEWAY-SIGNATURE": signature,
     };
   }
 
-  private toOpenAIMessages(
-    messages: ChatMessage[]
-  ): OpenAI.ChatCompletionMessageParam[] {
-    return messages.map((msg) => {
+  private toVmicMessages(messages: ChatMessage[]): Array<Record<string, string>> {
+    const vmicMessages: Array<Record<string, string>> = [];
+    for (const msg of messages) {
       if (typeof msg.content === "string") {
-        return { role: msg.role, content: msg.content } as OpenAI.ChatCompletionMessageParam;
+        vmicMessages.push({ role: msg.role, content: msg.content });
+        continue;
       }
-      const parts: OpenAI.ChatCompletionContentPart[] = msg.content.map((part) => {
+
+      const textParts: string[] = [];
+      for (const part of msg.content) {
         if (part.type === "text") {
-          return { type: "text" as const, text: part.text };
+          textParts.push(part.text);
+          continue;
         }
-        return {
-          type: "image_url" as const,
-          image_url: {
-            url: `data:${part.mimeType};base64,${part.base64}`,
-            detail: "low" as const,
-          },
-        };
-      });
-      return { role: msg.role, content: parts } as OpenAI.ChatCompletionMessageParam;
-    });
+        vmicMessages.push({
+          role: "user",
+          content: `data:${part.mimeType};base64,${part.base64}`,
+          content_type: "image",
+        });
+      }
+
+      if (textParts.length > 0) {
+        vmicMessages.push({ role: msg.role, content: textParts.join("\n") });
+      }
+    }
+    return vmicMessages;
+  }
+
+  private normalizeVmicContent(raw: unknown): string {
+    if (raw == null) return "";
+    if (typeof raw !== "string") return String(raw);
+
+    const trimmed = raw.trim();
+    if (
+      (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+      (trimmed.startsWith("{") && trimmed.endsWith("}"))
+    ) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (Array.isArray(parsed)) {
+          return parsed
+            .map((item) => {
+              if (!item || typeof item !== "object") return "";
+              const obj = item as Record<string, unknown>;
+              return String(obj.text ?? obj.content ?? obj.message ?? "");
+            })
+            .filter(Boolean)
+            .join("")
+            .replace(/\\"/g, '"');
+        }
+        if (parsed && typeof parsed === "object") {
+          const obj = parsed as Record<string, unknown>;
+          return String(obj.text ?? obj.content ?? obj.message ?? "").replace(/\\"/g, '"');
+        }
+      } catch {
+        // Keep original text when JSON parse fails.
+      }
+    }
+
+    return trimmed.replace(/\\"/g, '"');
   }
 
   async getDecision(messages: ChatMessage[]): Promise<ActionDecision> {
+    const requestId = crypto.randomUUID();
+    const sessionId = crypto.randomUUID();
+    const query = { requestId };
+
+    const vmicMessages = this.toVmicMessages(messages);
     const body = JSON.stringify({
+      requestId,
+      sessionId,
       provider: Config.VMIC_PROVIDER,
       model: Config.VMIC_MODEL,
-      messages: this.toOpenAIMessages(messages),
-      response_format: { type: "json_object" },
+      messages: vmicMessages,
+      multiModalRequest: vmicMessages.some((msg) => msg.content_type === "image"),
+      incremental: false,
     });
 
-    const response = await fetch(this.endpoint, {
+    const url = new URL(this.endpoint);
+    url.search = new URLSearchParams(query).toString();
+
+    const response = await fetch(url.toString(), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...this.buildAuthHeaders(),
+        ...this.buildGatewayHeaders("POST", Config.VMIC_URI, query),
       },
       body,
     });
 
+    const text = await response.text();
     if (!response.ok) {
-      const errorText = await response.text().catch(() => response.statusText);
-      throw new Error(`VMIC request failed (${response.status}): ${errorText}`);
+      throw new Error(`VMIC request failed (${response.status}): ${text}`);
     }
 
-    const data = (await response.json()) as { choices: Array<{ message: { content: string } }> };
-    return parseJsonResponse(data.choices[0]?.message?.content ?? "{}");
+    const data = JSON.parse(text) as {
+      data?: {
+        content?: unknown;
+      };
+    };
+
+    const content = this.normalizeVmicContent(data.data?.content ?? "");
+    return parseJsonResponse(content || "{}");
   }
 }
 
