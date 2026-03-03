@@ -158,7 +158,7 @@ async function getDecisionStreaming(
 ): Promise<ActionDecision> {
   if (!Config.STREAMING_ENABLED || !llm.capabilities.supportsStreaming || !llm.getDecisionStream) {
     const decision = await llm.getDecision(messages);
-    console.log("[LLM_PARSED_DECISION_NON_STREAM]", JSON.stringify(decision));
+    // console.log("[LLM_PARSED_DECISION_NON_STREAM]", JSON.stringify(decision));
     return decision;
   }
 
