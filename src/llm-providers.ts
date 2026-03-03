@@ -768,6 +768,10 @@ ${signedHeadersString}`;
     });
 
     const text = await response.text();
+    console.log("[VMIC_RAW_RESPONSE_BEGIN]");
+    console.log(text);
+    console.log("[VMIC_RAW_RESPONSE_END]");
+
     if (!response.ok) {
       throw new Error(`VMIC request failed (${response.status}): ${text}`);
     }
@@ -779,6 +783,9 @@ ${signedHeadersString}`;
     };
 
     const content = this.normalizeVmicContent(data.data?.content ?? "");
+    console.log("[VMIC_NORMALIZED_CONTENT_BEGIN]");
+    console.log(content);
+    console.log("[VMIC_NORMALIZED_CONTENT_END]");
     return parseJsonResponse(content || "{}");
   }
 }

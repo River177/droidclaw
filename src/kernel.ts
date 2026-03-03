@@ -157,7 +157,9 @@ async function getDecisionStreaming(
   messages: ChatMessage[]
 ): Promise<ActionDecision> {
   if (!Config.STREAMING_ENABLED || !llm.capabilities.supportsStreaming || !llm.getDecisionStream) {
-    return llm.getDecision(messages);
+    const decision = await llm.getDecision(messages);
+    console.log("[LLM_PARSED_DECISION_NON_STREAM]", JSON.stringify(decision));
+    return decision;
   }
 
   let accumulated = "";
@@ -168,7 +170,13 @@ async function getDecisionStreaming(
   }
   process.stdout.write("\n");
 
-  return parseJsonResponse(accumulated);
+  console.log("[LLM_RAW_STREAM_OUTPUT_BEGIN]");
+  console.log(accumulated);
+  console.log("[LLM_RAW_STREAM_OUTPUT_END]");
+
+  const decision = parseJsonResponse(accumulated);
+  console.log("[LLM_PARSED_DECISION_STREAM]", JSON.stringify(decision));
+  return decision;
 }
 
 // ===========================================
