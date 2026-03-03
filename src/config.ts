@@ -21,6 +21,10 @@ import {
   DEFAULT_VISION_MODE,
   DEFAULT_MAX_HISTORY_STEPS,
   DEFAULT_STREAMING_ENABLED,
+  DEFAULT_VMIC_DOMAIN,
+  DEFAULT_VMIC_URI,
+  DEFAULT_VMIC_PROVIDER,
+  DEFAULT_VMIC_MODEL,
   type VisionMode,
 } from "./constants.js";
 
@@ -57,7 +61,7 @@ export const Config = {
   // Streaming responses
   STREAMING_ENABLED: env("STREAMING_ENABLED", String(DEFAULT_STREAMING_ENABLED)) === "true",
 
-  // LLM Provider: "groq", "openai", "bedrock", "openrouter", or "ollama"
+  // LLM Provider: "groq", "openai", "bedrock", "openrouter", "ollama", or "vmic"
   LLM_PROVIDER: env("LLM_PROVIDER", "groq"),
 
   // Groq Configuration
@@ -80,12 +84,21 @@ export const Config = {
   OLLAMA_BASE_URL: env("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
   OLLAMA_MODEL: env("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
 
+  // VMIC Configuration (corporate LLM gateway with HMAC-SHA256 auth)
+  VMIC_APP_ID: env("VMIC_APP_ID"),
+  VMIC_APP_KEY: env("VMIC_APP_KEY"),
+  VMIC_DOMAIN: env("VMIC_DOMAIN", DEFAULT_VMIC_DOMAIN),
+  VMIC_URI: env("VMIC_URI", DEFAULT_VMIC_URI),
+  VMIC_PROVIDER: env("VMIC_PROVIDER", DEFAULT_VMIC_PROVIDER),
+  VMIC_MODEL: env("VMIC_MODEL", DEFAULT_VMIC_MODEL),
+
   getModel(): string {
     const provider = Config.LLM_PROVIDER;
     if (provider === "groq") return Config.GROQ_MODEL;
     if (provider === "bedrock") return Config.BEDROCK_MODEL;
     if (provider === "openrouter") return Config.OPENROUTER_MODEL;
     if (provider === "ollama") return Config.OLLAMA_MODEL;
+    if (provider === "vmic") return Config.VMIC_MODEL;
     return Config.OPENAI_MODEL;
   },
 
@@ -99,6 +112,14 @@ export const Config = {
     }
     if (provider === "openrouter" && !Config.OPENROUTER_API_KEY) {
       throw new Error("OPENROUTER_API_KEY is required when using OpenRouter provider");
+    }
+    if (provider === "vmic") {
+      if (!Config.VMIC_APP_ID) {
+        throw new Error("VMIC_APP_ID is required when using VMIC provider");
+      }
+      if (!Config.VMIC_APP_KEY) {
+        throw new Error("VMIC_APP_KEY is required when using VMIC provider");
+      }
     }
     // Bedrock uses AWS credential chain, no explicit validation needed
   },

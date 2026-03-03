@@ -84,6 +84,14 @@ export const DEFAULT_OPENROUTER_MODEL = "anthropic/claude-3.5-sonnet";
 export const DEFAULT_OLLAMA_MODEL = "llama3.2";
 
 // ===========================================
+// VMIC (Corporate LLM Gateway) Defaults
+// ===========================================
+export const DEFAULT_VMIC_DOMAIN = "chatgpt-api-pre.vmic.xyz";
+export const DEFAULT_VMIC_URI = "/chatgpt/completions";
+export const DEFAULT_VMIC_PROVIDER = "aliyun";
+export const DEFAULT_VMIC_MODEL = "qwen-vl-plus";
+
+// ===========================================
 // Bedrock Model Identifiers
 // ===========================================
 export const BEDROCK_ANTHROPIC_MODELS = ["anthropic"];

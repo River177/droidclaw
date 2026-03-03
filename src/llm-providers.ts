@@ -1,6 +1,7 @@
 /**
  * LLM Provider module for DroidClaw.
- * Supports OpenAI, Groq, AWS Bedrock, OpenRouter (via Vercel AI SDK), and Ollama (local).
+ * Supports OpenAI, Groq, AWS Bedrock, OpenRouter (via Vercel AI SDK), Ollama (local),
+ * and VMIC (corporate LLM gateway with HMAC-SHA256 authentication).
  *
  * Phase 3: Real multimodal vision (image content parts)
  * Phase 4A: Multi-turn conversation memory (ChatMessage[] interface)
@@ -8,6 +9,7 @@
  */
 
 import OpenAI from "openai";
+import { createHmac } from "node:crypto";
 import {
   BedrockRuntimeClient,
   InvokeModelCommand,
@@ -606,6 +608,91 @@ class BedrockProvider implements LLMProvider {
 }
 
 // ===========================================
+// VMIC Provider (Corporate LLM Gateway)
+// ===========================================
+
+/**
+ * VmicProvider calls a corporate LLM gateway that requires HMAC-SHA256
+ * request signing. The gateway accepts an OpenAI-compatible message format
+ * with an additional "provider" field to route to the underlying LLM.
+ *
+ * Authentication: each request carries three headers derived from APP_ID
+ * and APP_KEY:
+ *   X-App-Id   — the registered application identifier
+ *   X-Timestamp — current Unix timestamp in milliseconds
+ *   X-Sign      — HMAC-SHA256(key=APP_KEY, message=APP_ID + ":" + timestamp)
+ *                  encoded as a lowercase hex string
+ */
+class VmicProvider implements LLMProvider {
+  readonly capabilities = { supportsImages: true, supportsStreaming: false };
+
+  private get endpoint(): string {
+    return `https://${Config.VMIC_DOMAIN}${Config.VMIC_URI}`;
+  }
+
+  private buildAuthHeaders(): Record<string, string> {
+    const timestamp = Date.now().toString();
+    const sign = createHmac("sha256", Config.VMIC_APP_KEY)
+      .update(`${Config.VMIC_APP_ID}:${timestamp}`)
+      .digest("hex");
+    return {
+      "X-App-Id": Config.VMIC_APP_ID,
+      "X-Timestamp": timestamp,
+      "X-Sign": sign,
+    };
+  }
+
+  private toOpenAIMessages(
+    messages: ChatMessage[]
+  ): OpenAI.ChatCompletionMessageParam[] {
+    return messages.map((msg) => {
+      if (typeof msg.content === "string") {
+        return { role: msg.role, content: msg.content } as OpenAI.ChatCompletionMessageParam;
+      }
+      const parts: OpenAI.ChatCompletionContentPart[] = msg.content.map((part) => {
+        if (part.type === "text") {
+          return { type: "text" as const, text: part.text };
+        }
+        return {
+          type: "image_url" as const,
+          image_url: {
+            url: `data:${part.mimeType};base64,${part.base64}`,
+            detail: "low" as const,
+          },
+        };
+      });
+      return { role: msg.role, content: parts } as OpenAI.ChatCompletionMessageParam;
+    });
+  }
+
+  async getDecision(messages: ChatMessage[]): Promise<ActionDecision> {
+    const body = JSON.stringify({
+      provider: Config.VMIC_PROVIDER,
+      model: Config.VMIC_MODEL,
+      messages: this.toOpenAIMessages(messages),
+      response_format: { type: "json_object" },
+    });
+
+    const response = await fetch(this.endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...this.buildAuthHeaders(),
+      },
+      body,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => response.statusText);
+      throw new Error(`VMIC request failed (${response.status}): ${errorText}`);
+    }
+
+    const data = (await response.json()) as { choices: Array<{ message: { content: string } }> };
+    return parseJsonResponse(data.choices[0]?.message?.content ?? "{}");
+  }
+}
+
+// ===========================================
 // Shared JSON Parsing
 // ===========================================
 
@@ -654,6 +741,9 @@ export function getLlmProvider(): LLMProvider {
   }
   if (Config.LLM_PROVIDER === "openrouter") {
     return new OpenRouterProvider();
+  }
+  if (Config.LLM_PROVIDER === "vmic") {
+    return new VmicProvider();
   }
   // OpenAI, Groq, and Ollama all use OpenAI-compatible API
   return new OpenAIProvider();
