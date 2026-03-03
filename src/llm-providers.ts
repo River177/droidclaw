@@ -796,30 +796,48 @@ export function sanitizeJsonText(raw: string): string {
 }
 
 export function parseJsonResponse(text: string): ActionDecision {
-  let decision: ActionDecision | null = null;
+  let parsed: unknown = null;
   try {
-    decision = JSON.parse(text);
+    parsed = JSON.parse(text);
   } catch {
     try {
-      decision = JSON.parse(sanitizeJsonText(text));
+      parsed = JSON.parse(sanitizeJsonText(text));
     } catch {
       // Try to extract JSON from markdown code blocks or mixed text
       const match = text.match(/\{[\s\S]*\}/);
       if (match) {
         try {
-          decision = JSON.parse(sanitizeJsonText(match[0]));
+          parsed = JSON.parse(sanitizeJsonText(match[0]));
         } catch {
           // fall through
         }
       }
     }
   }
-  if (!decision) {
+
+  // Some providers return a JSON-encoded string: "{\"action\":...}"
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      // keep as string; validation below will fallback safely
+    }
+  }
+
+  if (!parsed || typeof parsed !== "object") {
     console.log(`Warning: Could not parse LLM response: ${text.slice(0, 200)}`);
     return { action: "wait", reason: "Failed to parse response, waiting" };
   }
-  decision.coordinates = sanitizeCoordinates(decision.coordinates);
-  return decision;
+
+  const decision = parsed as Partial<ActionDecision>;
+  if (typeof decision.action !== "string" || decision.action.trim().length === 0) {
+    console.log(`Warning: LLM response missing valid action: ${text.slice(0, 200)}`);
+    return { action: "wait", reason: "Invalid LLM action, waiting" };
+  }
+
+  decision.action = decision.action.trim();
+  decision.coordinates = sanitizeCoordinates(decision.coordinates as [number, number] | undefined);
+  return decision as ActionDecision;
 }
 
 // ===========================================
