@@ -9,7 +9,7 @@
  */
 
 import OpenAI from "openai";
-import { createHmac } from "node:crypto";
+import crypto, { createHmac } from "node:crypto";
 import {
   BedrockRuntimeClient,
   InvokeModelCommand,
@@ -61,7 +61,7 @@ Example:
 {"think": "I see the Settings app is open. I need to scroll down to find Display settings.", "plan": ["Open Settings", "Navigate to Display", "Change theme to dark", "Verify change"], "planProgress": "Step 2: navigating to Display", "action": "swipe", "direction": "up", "reason": "Scroll down to find Display option"}
 
 ═══════════════════════════════════════════
-AVAILABLE ACTIONS (22 total)
+AVAILABLE ACTIONS (23 total)
 ═══════════════════════════════════════════
 
 Navigation (coordinates MUST be a JSON array of TWO separate integers [x, y] — never concatenate them):
@@ -83,6 +83,7 @@ App Control:
   {"action": "open_url", "url": "https://example.com", "reason": "Open URL in browser"}
   {"action": "switch_app", "package": "com.whatsapp", "reason": "Switch to WhatsApp"}
   {"action": "open_settings", "setting": "wifi|bluetooth|display|sound|battery|location|apps|date|accessibility|developer", "reason": "Open settings screen"}
+  {"action": "rotate", "orientation": "portrait|landscape|toggle", "reason": "Rotate device orientation"}
 
 Data:
   {"action": "clipboard_get", "reason": "Read clipboard contents"}
@@ -351,7 +352,7 @@ const actionDecisionSchema = z.object({
   think: z.string().optional().describe("Your reasoning about the current screen state and what to do next"),
   plan: z.array(z.string()).optional().describe("3-5 high-level steps to achieve the goal"),
   planProgress: z.string().optional().describe("Which plan step you are currently on"),
-  action: z.string().describe("The action to take: tap, type, scroll, enter, back, home, wait, done, longpress, launch, clear, clipboard_get, clipboard_set, paste, shell, open_url, switch_app, notifications, pull_file, push_file, keyevent, open_settings, read_screen, submit_message, copy_visible_text, wait_for_content, find_and_tap, compose_email"),
+  action: z.string().describe("The action to take: tap, type, scroll, enter, back, home, wait, done, longpress, launch, clear, clipboard_get, clipboard_set, paste, shell, open_url, switch_app, notifications, pull_file, push_file, keyevent, open_settings, rotate, read_screen, submit_message, copy_visible_text, wait_for_content, find_and_tap, compose_email"),
   coordinates: z.tuple([z.number(), z.number()]).optional().describe("Target field as [x, y] — used by tap, longpress, type, and paste"),
   text: z.string().optional().describe("Text to type, clipboard text, or email body for compose_email"),
   direction: z.string().optional().describe("Scroll direction: up, down, left, right"),
@@ -369,6 +370,7 @@ const actionDecisionSchema = z.object({
   dest: z.string().optional().describe("Device destination path for push_file action"),
   code: z.number().optional().describe("Android keycode number for keyevent action"),
   setting: z.string().optional().describe("Setting name for open_settings: wifi, bluetooth, display, sound, battery, location, apps, date, accessibility, developer"),
+  orientation: z.enum(["portrait", "landscape", "toggle"]).optional().describe("Target screen orientation for rotate action"),
 });
 
 class OpenRouterProvider implements LLMProvider {
@@ -612,16 +614,9 @@ class BedrockProvider implements LLMProvider {
 // ===========================================
 
 /**
- * VmicProvider calls a corporate LLM gateway that requires HMAC-SHA256
- * request signing. The gateway accepts an OpenAI-compatible message format
- * with an additional "provider" field to route to the underlying LLM.
- *
- * Authentication: each request carries three headers derived from APP_ID
- * and APP_KEY:
- *   X-App-Id   — the registered application identifier
- *   X-Timestamp — current Unix timestamp in milliseconds
- *   X-Sign      — HMAC-SHA256(key=APP_KEY, message=APP_ID + ":" + timestamp)
- *                  encoded as a lowercase hex string
+ * VmicProvider calls a corporate LLM gateway using gateway-style HMAC
+ * signing headers (X-AI-GATEWAY-*). Request/response payloads are mapped
+ * between DroidClaw's OpenAI-like message format and VMIC's message schema.
  */
 class VmicProvider implements LLMProvider {
   readonly capabilities = { supportsImages: true, supportsStreaming: false };
@@ -630,65 +625,170 @@ class VmicProvider implements LLMProvider {
     return `https://${Config.VMIC_DOMAIN}${Config.VMIC_URI}`;
   }
 
-  private buildAuthHeaders(): Record<string, string> {
-    const timestamp = Date.now().toString();
-    const sign = createHmac("sha256", Config.VMIC_APP_KEY)
-      .update(`${Config.VMIC_APP_ID}:${timestamp}`)
-      .digest("hex");
+  private genNonce(length = 8): string {
+    const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+    let out = "";
+    for (let i = 0; i < length; i++) {
+      out += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return out;
+  }
+
+  private canonicalQuery(params: Record<string, string>): string {
+    const entries = Object.entries(params).sort(([a], [b]) => a.localeCompare(b));
+    return entries
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+      .join("&");
+  }
+
+  private buildGatewayHeaders(
+    method: string,
+    uri: string,
+    query: Record<string, string>
+  ): Record<string, string> {
+    const appId = Config.VMIC_APP_ID;
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const nonce = this.genNonce();
+    const canonicalQueryString = this.canonicalQuery(query);
+
+    const signedHeadersString =
+      `x-ai-gateway-app-id:${appId}
+` +
+      `x-ai-gateway-timestamp:${timestamp}
+` +
+      `x-ai-gateway-nonce:${nonce}`;
+
+    const signingString = `${method.toUpperCase()}
+${uri}
+${canonicalQueryString}
+${appId}
+${timestamp}
+${signedHeadersString}`;
+
+    const signature = createHmac("sha256", Buffer.from(Config.VMIC_APP_KEY, "utf-8"))
+      .update(Buffer.from(signingString, "utf-8"))
+      .digest("base64");
+
     return {
-      "X-App-Id": Config.VMIC_APP_ID,
-      "X-Timestamp": timestamp,
-      "X-Sign": sign,
+      "X-AI-GATEWAY-APP-ID": appId,
+      "X-AI-GATEWAY-TIMESTAMP": timestamp,
+      "X-AI-GATEWAY-NONCE": nonce,
+      "X-AI-GATEWAY-SIGNED-HEADERS":
+        "x-ai-gateway-app-id;x-ai-gateway-timestamp;x-ai-gateway-nonce",
+      "X-AI-GATEWAY-SIGNATURE": signature,
     };
   }
 
-  private toOpenAIMessages(
-    messages: ChatMessage[]
-  ): OpenAI.ChatCompletionMessageParam[] {
-    return messages.map((msg) => {
+  private toVmicMessages(messages: ChatMessage[]): Array<Record<string, string>> {
+    const vmicMessages: Array<Record<string, string>> = [];
+    for (const msg of messages) {
       if (typeof msg.content === "string") {
-        return { role: msg.role, content: msg.content } as OpenAI.ChatCompletionMessageParam;
+        vmicMessages.push({ role: msg.role, content: msg.content });
+        continue;
       }
-      const parts: OpenAI.ChatCompletionContentPart[] = msg.content.map((part) => {
+
+      const textParts: string[] = [];
+      for (const part of msg.content) {
         if (part.type === "text") {
-          return { type: "text" as const, text: part.text };
+          textParts.push(part.text);
+          continue;
         }
-        return {
-          type: "image_url" as const,
-          image_url: {
-            url: `data:${part.mimeType};base64,${part.base64}`,
-            detail: "low" as const,
-          },
-        };
-      });
-      return { role: msg.role, content: parts } as OpenAI.ChatCompletionMessageParam;
-    });
+        vmicMessages.push({
+          role: "user",
+          content: `data:${part.mimeType};base64,${part.base64}`,
+          content_type: "image",
+        });
+      }
+
+      if (textParts.length > 0) {
+        vmicMessages.push({ role: msg.role, content: textParts.join("\n") });
+      }
+    }
+    return vmicMessages;
+  }
+
+  private normalizeVmicContent(raw: unknown): string {
+    if (raw == null) return "";
+    if (typeof raw !== "string") return String(raw);
+
+    const trimmed = raw.trim();
+    if (
+      (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+      (trimmed.startsWith("{") && trimmed.endsWith("}"))
+    ) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (Array.isArray(parsed)) {
+          return parsed
+            .map((item) => {
+              if (!item || typeof item !== "object") return "";
+              const obj = item as Record<string, unknown>;
+              return String(obj.text ?? obj.content ?? obj.message ?? "");
+            })
+            .filter(Boolean)
+            .join("")
+            .replace(/\\"/g, '"');
+        }
+        if (parsed && typeof parsed === "object") {
+          const obj = parsed as Record<string, unknown>;
+          return String(obj.text ?? obj.content ?? obj.message ?? "").replace(/\\"/g, '"');
+        }
+      } catch {
+        // Keep original text when JSON parse fails.
+      }
+    }
+
+    return trimmed.replace(/\\"/g, '"');
   }
 
   async getDecision(messages: ChatMessage[]): Promise<ActionDecision> {
+    const requestId = crypto.randomUUID();
+    const sessionId = crypto.randomUUID();
+    const query = { requestId };
+
+    const vmicMessages = this.toVmicMessages(messages);
     const body = JSON.stringify({
+      requestId,
+      sessionId,
       provider: Config.VMIC_PROVIDER,
       model: Config.VMIC_MODEL,
-      messages: this.toOpenAIMessages(messages),
-      response_format: { type: "json_object" },
+      messages: vmicMessages,
+      multiModalRequest: vmicMessages.some((msg) => msg.content_type === "image"),
+      incremental: false,
     });
 
-    const response = await fetch(this.endpoint, {
+    const url = new URL(this.endpoint);
+    url.search = new URLSearchParams(query).toString();
+
+    const response = await fetch(url.toString(), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...this.buildAuthHeaders(),
+        ...this.buildGatewayHeaders("POST", Config.VMIC_URI, query),
       },
       body,
     });
 
+    const text = await response.text();
+    // console.log("[VMIC_RAW_RESPONSE_BEGIN]");
+    // console.log(text);
+    // console.log("[VMIC_RAW_RESPONSE_END]");
+
     if (!response.ok) {
-      const errorText = await response.text().catch(() => response.statusText);
-      throw new Error(`VMIC request failed (${response.status}): ${errorText}`);
+      throw new Error(`VMIC request failed (${response.status}): ${text}`);
     }
 
-    const data = (await response.json()) as { choices: Array<{ message: { content: string } }> };
-    return parseJsonResponse(data.choices[0]?.message?.content ?? "{}");
+    const data = JSON.parse(text) as {
+      data?: {
+        content?: unknown;
+      };
+    };
+
+    const content = this.normalizeVmicContent(data.data?.content ?? "");
+    // console.log("[VMIC_NORMALIZED_CONTENT_BEGIN]");
+    // console.log(content);
+    // console.log("[VMIC_NORMALIZED_CONTENT_END]");
+    return parseJsonResponse(content || "{}");
   }
 }
 
@@ -705,30 +805,48 @@ export function sanitizeJsonText(raw: string): string {
 }
 
 export function parseJsonResponse(text: string): ActionDecision {
-  let decision: ActionDecision | null = null;
+  let parsed: unknown = null;
   try {
-    decision = JSON.parse(text);
+    parsed = JSON.parse(text);
   } catch {
     try {
-      decision = JSON.parse(sanitizeJsonText(text));
+      parsed = JSON.parse(sanitizeJsonText(text));
     } catch {
       // Try to extract JSON from markdown code blocks or mixed text
       const match = text.match(/\{[\s\S]*\}/);
       if (match) {
         try {
-          decision = JSON.parse(sanitizeJsonText(match[0]));
+          parsed = JSON.parse(sanitizeJsonText(match[0]));
         } catch {
           // fall through
         }
       }
     }
   }
-  if (!decision) {
+
+  // Some providers return a JSON-encoded string: "{\"action\":...}"
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      // keep as string; validation below will fallback safely
+    }
+  }
+
+  if (!parsed || typeof parsed !== "object") {
     console.log(`Warning: Could not parse LLM response: ${text.slice(0, 200)}`);
     return { action: "wait", reason: "Failed to parse response, waiting" };
   }
-  decision.coordinates = sanitizeCoordinates(decision.coordinates);
-  return decision;
+
+  const decision = parsed as Partial<ActionDecision>;
+  if (typeof decision.action !== "string" || decision.action.trim().length === 0) {
+    console.log(`Warning: LLM response missing valid action: ${text.slice(0, 200)}`);
+    return { action: "wait", reason: "Invalid LLM action, waiting" };
+  }
+
+  decision.action = decision.action.trim();
+  decision.coordinates = sanitizeCoordinates(decision.coordinates as [number, number] | undefined);
+  return decision as ActionDecision;
 }
 
 // ===========================================

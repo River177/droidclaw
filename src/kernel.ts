@@ -157,7 +157,9 @@ async function getDecisionStreaming(
   messages: ChatMessage[]
 ): Promise<ActionDecision> {
   if (!Config.STREAMING_ENABLED || !llm.capabilities.supportsStreaming || !llm.getDecisionStream) {
-    return llm.getDecision(messages);
+    const decision = await llm.getDecision(messages);
+    // console.log("[LLM_PARSED_DECISION_NON_STREAM]", JSON.stringify(decision));
+    return decision;
   }
 
   let accumulated = "";
@@ -168,7 +170,13 @@ async function getDecisionStreaming(
   }
   process.stdout.write("\n");
 
-  return parseJsonResponse(accumulated);
+  // console.log("[LLM_RAW_STREAM_OUTPUT_BEGIN]");
+  // console.log(accumulated);
+  // console.log("[LLM_RAW_STREAM_OUTPUT_END]");
+
+  const decision = parseJsonResponse(accumulated);
+  // console.log("[LLM_PARSED_DECISION_STREAM]", JSON.stringify(decision));
+  return decision;
 }
 
 // ===========================================
@@ -247,7 +255,7 @@ export async function runAgent(goal: string, maxSteps?: number): Promise<{ succe
 
           // Context-aware recovery hints based on what actions are failing
           const failingTypes = new Set(
-            recentActions.slice(-stuckCount).map((a) => a.split("(")[0])
+            recentActions.slice(-stuckCount).map((a) => (a ?? "unknown").split("(")[0])
           );
 
           let hint = `\nWARNING: You have been stuck for ${stuckCount} steps. The screen is NOT changing.`;
@@ -303,7 +311,7 @@ export async function runAgent(goal: string, maxSteps?: number): Promise<{ succe
       const navigationActions = new Set(["swipe", "scroll", "back", "home", "wait"]);
       const navCount = recentActions
         .slice(-5)
-        .filter((a) => navigationActions.has(a.split("(")[0])).length;
+        .filter((a) => navigationActions.has((a ?? "unknown").split("(")[0])).length;
       if (navCount >= 4) {
         diffContext +=
           `\nDRIFT_WARNING: Your last ${navCount} actions were all navigation/waiting (swipe, back, wait, screenshot) with no direct interaction. ` +
@@ -428,9 +436,12 @@ export async function runAgent(goal: string, maxSteps?: number): Promise<{ succe
     );
 
     // Track action signature for repetition detection
+    const actionName = typeof decision.action === "string" && decision.action.trim()
+      ? decision.action.trim()
+      : "wait";
     const actionSig = decision.coordinates
-      ? `${decision.action}(${decision.coordinates.join(",")})`
-      : decision.action;
+      ? `${actionName}(${decision.coordinates.join(",")})`
+      : actionName;
     recentActions.push(actionSig);
     if (recentActions.length > 8) recentActions.shift();
 
